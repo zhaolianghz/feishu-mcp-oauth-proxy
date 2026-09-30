@@ -1,6 +1,12 @@
-node_modules/
+# 凭证 —— 绝不能提交
 .env
-.env.*
+.env.local
+lark-keychain/
+
+node_modules/
 *.log
 .DS_Store
-lark-keychain/
+
+# Python 编译缓存
+__pycache__/
+*.pyc

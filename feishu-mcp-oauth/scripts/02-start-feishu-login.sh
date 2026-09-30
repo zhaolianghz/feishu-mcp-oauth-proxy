@@ -1,10 +1,14 @@
 #!/bin/bash
 # 第一步：发起 device authorization，拿授权链接（不阻塞）
-# 用法：sudo bash /opt/feishu-mcp/scripts/02-start-feishu-login.sh
-set -e
+# 用法：sudo bash scripts/02-start-feishu-login.sh
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+CONTAINER="${FEISHU_MCP_CONTAINER:-feishu-mcp}"
 
 echo "=== 发起 device authorization ==="
-OUT="$(docker exec -u node feishu-mcp lark-cli auth login --no-wait --json \
+OUT="$(docker exec -u node "$CONTAINER" lark-cli auth login --no-wait --json \
         --domain docs,drive,base,sheets,wiki 2>&1 || true)"
 echo "$OUT"
 
@@ -26,5 +30,5 @@ echo "  $URL"
 echo
 echo "授权完毕后执行（用这条命令里给出的 device_code）："
 echo
-echo "  sudo bash /opt/feishu-mcp/scripts/03-complete-feishu-login.sh $CODE"
+echo "  sudo bash ${SCRIPT_DIR}/03-complete-feishu-login.sh ${CODE}"
 echo "=================================================="

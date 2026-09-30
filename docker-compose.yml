@@ -1,0 +1,80 @@
+# feishu-mcp + OAuth 2.1 中间件 双服务编排
+#
+# 所有凭证从 .env 读取（cp .env.example .env 后填入），**不要把真实值提交到版本库**。
+#
+# ⚠️ 关键：lark-keychain 的 bind mount 不能删
+#   lark-cli 的密钥环落在 ~/.local/share/lark-cli（master.key + *.enc），
+#   不挂出来会落在容器可写层 → docker compose up -d 重建即丢，
+#   App Secret 与 user token 一起没了，连重新登录都做不了。
+#   用 bind mount 而非 named volume：镜像里该目录不存在，
+#   named volume 首次挂载会建成 root:root，uid 1000 的 node 用户写不进去。
+
+services:
+  feishu-mcp:
+    build:
+      context: ./feishu-mcp
+    image: feishu-mcp:local
+    container_name: feishu-mcp
+    restart: unless-stopped
+    # 不直接对外暴露，只由 oauth-proxy 内网访问
+    expose:
+      - "3000"
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: "3000"
+      # Bearer token —— 由 oauth-proxy 用它调本服务（最终用户看不到）
+      MCP_HTTP_TOKEN: "${MCP_HTTP_TOKEN:?必填，见 .env.example}"
+      LARK_IDENTITY: user
+      LARK_TIMEOUT_MS: "120000"
+    volumes:
+      - lark-cli-config:/home/node/.lark-cli          # config.json
+      - ./lark-keychain:/home/node/.local/share/lark-cli   # 真正的凭证在这里
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  oauth-proxy:
+    build:
+      context: ./feishu-mcp-oauth
+    image: feishu-mcp-oauth:local
+    container_name: oauth-proxy
+    restart: unless-stopped
+    ports:
+      # 只监听回环，由 nginx 反代到 443。不要写 0.0.0.0
+      - "127.0.0.1:${OAUTH_PROXY_PORT:-3011}:3011"
+    environment:
+      PORT: "3011"
+      # OAuth issuer，也是对外域名
+      PUBLIC_BASE_URL: "https://${DOMAIN:?必填，如 mcp.example.com}"
+      # Host 白名单：OAuth 元数据按请求 Host 动态生成，同时防伪造 Host
+      # ⚠️ 域名绝不能含下划线（违反 RFC 1123 → 严格 TLS 客户端握手失败）
+      ALLOWED_HOSTS: "${DOMAIN:?必填}"
+      UPSTREAM: "http://feishu-mcp:3000"
+      # 必须与 feishu-mcp 的 MCP_HTTP_TOKEN 一致
+      MCP_HTTP_TOKEN: "${MCP_HTTP_TOKEN:?必填}"
+      # 登录门密码（必须设！否则未配 GitHub OAuth 时，知道用户名就能进，
+      # 而本服务能读写你的飞书文档）
+      LOGIN_PASSWORD: "${LOGIN_PASSWORD:?必填}"
+      # 固定 session 密钥，否则每次重启都要重新登录
+      # 生成：openssl rand -hex 32
+      SESSION_SECRET: "${SESSION_SECRET:?必填}"
+      # 可选：GitHub OAuth 登录。配了就优先用 GitHub 白名单登录
+      GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
+      GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
+      GITHUB_CALLBACK_URL: "https://${DOMAIN}/oauth/github/callback"
+      ALLOWED_GITHUB_USERS: "${GITHUB_USER:-}"
+      # 排查 ChatGPT 接入问题时可临时设为 1，会打印 DCR 原始请求体
+      DEBUG_PROBE: "${DEBUG_PROBE:-0}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      - feishu-mcp
+
+volumes:
+  lark-cli-config:
