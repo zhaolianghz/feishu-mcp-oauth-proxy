@@ -1,0 +1,15 @@
+{
+  "name": "feishu-mcp-oauth-proxy",
+  "version": "1.0.0",
+  "description": "OAuth 2.1 + PKCE + DCR middleware to expose feishu-mcp as a ChatGPT-compatible MCP server",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "express-session": "^1.18.1",
+    "helmet": "^8.0.0"
+  }
+}
