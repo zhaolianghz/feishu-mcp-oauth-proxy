@@ -20,10 +20,9 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://mcp.example.com'
 // Host 白名单：OAuth 元数据（issuer / endpoints）按请求 Host 动态生成，
 // 这样多域名都能自洽工作，同时不会被伪造的 Host 头带偏。
 //
-// ⚠️ 域名必须是合法主机名 —— RFC 1123 不允许 "_"。这个服务最初叫
-//    bad_name.example.com，下划线导致新版 OpenSSL 拒绝 *.example.com 的通配符
-//    匹配（RFC 6125），严格 TLS 客户端全部握手失败。已改为连字符。
-//    新增域名时务必先确认不含下划线。
+// ⚠️ 域名必须是合法主机名 —— RFC 1123 不允许 "_"。
+//    下划线域名会让新版 OpenSSL 拒绝 *.example.com 的通配符匹配（RFC 6125），
+//    严格 TLS 客户端全部握手失败。新增域名时务必先确认不含下划线。
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS || 'mcp.example.com')
   .split(',').map(function(s) { return s.trim().toLowerCase(); }).filter(Boolean);
 
@@ -137,11 +136,11 @@ app.use(function(req, res, next) {
  *   2) /.well-known/oauth-authorization-server/<path>   （RFC 8414 带 issuer 路径段）
  *   3) /.well-known/openid-configuration                （OIDC 兼容别名）
  *
- * 踩坑记录（2026-09-30）：ChatGPT 建 connector 时会**并发探测**多个发现路径，
- * 拿到 401 → 读 WWW-Authenticate 里的 resource_metadata → 取 AS 元数据。
- * 当时只有 (1) 存在，(3) 命中 Express 默认 404（**text/html** 而非 JSON），
- * ChatGPT 的严格解析器直接判定整个发现流程失败 → UI 报"无法创建 MCP 应用"，
- * 表现为 POST /register 能成功(201) 但**从不请求 /authorize**，反复重试。
+ * 注意：ChatGPT 建 connector 时会**并发探测**多个发现路径，拿到 401 后
+ * 读 WWW-Authenticate 里的 resource_metadata，再去取 AS 元数据。
+ * 任一路径返回 Express 默认 404（**text/html** 而非 JSON）就会被严格解析器
+ * 判定整个发现流程失败 → UI 报"无法创建 MCP 应用"，表现为 POST /register
+ * 能成功(201) 但**从不请求 /authorize**，反复重试。
  * 结论：这类客户端要**所有**探测路径都返回合法 JSON，缺一个就整体失败。
  */
 function asMetadata(base) {

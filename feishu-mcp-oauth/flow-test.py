@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""端到端验证 mcp.example.com 的 OAuth 2.1 + PKCE + DCR + /mcp 全链路。
+"""端到端验证 OAuth 2.1 + PKCE + DCR + /mcp 全链路（30 项检查）。
 
-注：旧域名 bad_name.example.com（下划线）已废弃 —— 下划线违反 RFC 1123，
-新版 OpenSSL 对 *.example.com 通配符匹配失败，严格 TLS 客户端全部握手被拒。
+用法：
+    BASE=https://你的域名 LOGIN_PASSWORD='你的登录门密码' python3 flow-test.py
+
+环境变量：
+    BASE            服务地址，默认 https://mcp.example.com
+    LOGIN_PASSWORD  登录门密码，留空则跳过需要登录的用例
 """
 import base64
 import hashlib
@@ -39,8 +43,8 @@ def b64url(raw: bytes) -> str:
 s = requests.Session()
 s.headers["User-Agent"] = "oauth-flow-test/1.0"
 if os.environ.get("INSECURE") == "1":
-    # 仅在直连源站（CF Origin CA 私有证书）等特殊场景用；常规生产验证不要开。
-    # 历史用途：验证带下划线的旧域名（已废弃）
+    # 仅在直连源站（私有 CA 证书）等特殊场景用；常规生产验证不要开。
+    # 例：直连源站时证书未被公信 CA 信任，可用 INSECURE=1 跳过校验。
     import urllib3
 
     urllib3.disable_warnings()
