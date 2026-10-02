@@ -158,10 +158,15 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 ├── .env.example                 # 配置模板
 ├── deploy/
 │   ├── preflight.sh             # 部署前检查
-│   └── deploy.sh                # 一键部署
+│   ├── deploy.sh                # 一键部署
+│   └── patch-local-tools.sh     # 把本地工具注册进上游 index.ts
 ├── feishu-mcp/                  # feishu-mcp 服务的镜像定义
 │   ├── Dockerfile               # 修过上游的构建问题
-│   └── Dockerfile.upstream-original
+│   ├── Dockerfile.upstream-original
+│   └── local-src/               # ← 本仓库自带的工具（叠加在上游 src/ 之上）
+│       └── src/
+│           ├── localTools.ts    #   工具清单
+│           └── tools/           #   createFolder / listFolder / moveFile / renameFile
 ├── feishu-mcp-oauth/            # ← OAuth 中间件，本项目核心
 │   ├── oauth-proxy-server.js    #   全部逻辑在这一个文件里
 │   ├── Dockerfile
@@ -172,6 +177,59 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 └── docs/
     └── feishu-app-setup.md      # 飞书应用创建步骤与权限清单
 ```
+
+---
+
+## 本仓库自带的工具
+
+上游 feishu-mcp 只注册了 9 个读写的文档类工具，**没有云空间文件管理**。本仓库通过叠加层
+补上 4 个，连起来共 **13 个**：
+
+| 工具 | 做什么 | 底层命令 |
+|---|---|---|
+| `create_feishu_folder` | 新建文件夹（不传父目录就是建在根目录） | `drive +create-folder` |
+| `list_feishu_folder` | 列目录，支持递归；翻页自动收全 | `drive files list` |
+| `move_feishu_file` | 移动文件/文件夹到指定目录 | `drive +move` |
+| `rename_feishu_file` | 重命名（传 url 最省事，会自动识别类型） | `drive +update-title` |
+
+配套的权限（可写的 `drive:drive`）见 `docs/feishu-app-setup.md` 第二节。
+
+### ⚠️ 不要直接改 `feishu-mcp/src/`
+
+`deploy/deploy.sh` 第 2 步每次部署都从 GitHub 重新克隆上游 `src/` 覆盖本地。
+你在这个目录里加的工具，**下次部署会被无声冲掉** —— MCP 不会报错，只是工具少了，
+等到某天批量整理文件时才发现工具不见了。
+
+所以本仓库的工具放在 `feishu-mcp/local-src/`，部署时按这个顺序处理：
+
+1. 克隆上游 `src/`（可能被覆盖，无所谓）
+2. `cp -r feishu-mcp/local-src/src/. feishu-mcp/src/` —— 铺一层本地工具
+3. `bash deploy/patch-local-tools.sh` —— 往 `index.ts` 注入 `...LOCAL_TOOLS` 注册
+
+### 想再加一个工具
+
+1. 在 `feishu-mcp/local-src/src/tools/` 下写一个 `ToolDef`，照抄同目录里现成的写法
+2. 挂到 `feishu-mcp/local-src/src/localTools.ts` 的 `LOCAL_TOOLS` 数组上
+3. **不需要**动 `index.ts`，也不需要改补丁脚本 —— 数组会自动展开
+
+### 补丁脚本失配了怎么办
+
+`patch-local-tools.sh` 靠三处锚点定位上游 `index.ts`。**锚点命中数不等于 1 就直接
+退出非 0**，进而让 `deploy.sh` 整个中止 —— 这是故意的：宁可部署失败，也不要悄悄少几个
+工具让你在几天后才发现。
+
+所以看到这条报错：
+
+```
+❌ 无法给上游 index.ts 打补丁。
+   上游可能改了源码结构，请打开 feishu-mcp/src/index.ts 手工对齐 deploy/patch-local-tools.sh 里的锚点。
+```
+
+就是上游 `feifan2024/feishu_mcp` 改了结构。打开 `feishu-mcp/src/index.ts` 找到新的
+import 区块和 `ALL_TOOLS` 数组，把 `patch-local-tools.sh` 里的 `A1`/`A2` 换成新的锚点字符串
+即可（每行必须是上游里唯一的一行）。
+
+第三处锚点（启动日志里的工具数量）是可选的，匹配不到只会告警，不影响工具注册。
 
 ---
 
@@ -268,6 +326,13 @@ sudo nginx -s reload   # 用这个，不要用 systemctl
   以你的飞书身份操作。需要多人隔离得自己加账号体系。
 - **容器重启需要重新授权 ChatGPT**。access token 存在内存里，没有落盘。
 - 只在 Linux + Docker Compose v2 环境验证过。
+- **移动文件夹是异步的**。飞书把「移动」当后台任务，接口可能先返回「还没好」。
+  这时 `move_feishu_file` 返回 `moved: false` 加一个 `hint`，按返回里的
+  `next_command` 稍后复查即可 —— **超时不是失败，别重复发起**，重复发起会互相打架。
+- **知识库（Wiki）节点不能直接移动**。要先用 lark-cli 的 `wiki +move-to-drive`
+  把它挪出知识库变成云空间文件，再交给 `move_feishu_file`。
+- **重命名不支持旧版文档和思维导图**（`doc` / `mindnote`）。其余类型传 `url` 最省事，
+  会自动识别。
 
 ---
 

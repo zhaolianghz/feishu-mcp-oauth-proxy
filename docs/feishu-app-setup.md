@@ -37,6 +37,10 @@
 | 查看云空间 | `drive:drive.metadata:readonly` |
 | 知识库 | `wiki:wiki:readonly` / `wiki:node:read` |
 
+> **Drive 文件管理工具需要可写的 `drive:drive`**，只有 `:readonly` 不够。
+> 本仓库自带的 `create_feishu_folder` / `move_feishu_file` / `rename_feishu_file`
+> 都会写云空间；`list_feishu_folder` 只读，`:readonly` + `metadata:readonly` 即可。
+
 ### 电子表格
 
 | 权限名 | 权限标识 |

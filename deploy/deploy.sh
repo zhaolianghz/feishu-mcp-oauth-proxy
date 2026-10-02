@@ -51,6 +51,13 @@ else
   echo "  ✅ 上游代码就绪（Dockerfile 保持用本仓库修正版）"
 fi
 
+# 本仓库自带的 Drive 文件管理工具（create_folder / list_folder / move_file / rename_file）。
+# 上游 src/ 每次都可能被重新克隆覆盖，所以本地工具走「叠加层」：铺到上游 src 之上，
+# 再给 index.ts 打注册补丁。**每次部署都必须跑**，否则本地工具会静默消失。
+echo "  正在叠加本仓库本地工具（feishu-mcp/local-src）..."
+cp -r feishu-mcp/local-src/src/. feishu-mcp/src/
+bash deploy/patch-local-tools.sh
+
 echo
 echo "=== 3. 构建并启动 ==="
 # ⚠️ 必须 --build：build cache 会命中旧层，up -d 不重建就跑旧代码
