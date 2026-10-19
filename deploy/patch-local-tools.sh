@@ -19,6 +19,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 index_ts="${1:-$repo_root/feishu-mcp/src/index.ts}"
 http_ts="$(dirname "$index_ts")/httpServer.ts"
+larkCli_ts="$(dirname "$index_ts")/larkCli.ts"
 
 if [ ! -f "$index_ts" ]; then
   echo "❌ 找不到 $index_ts" >&2
@@ -107,3 +108,112 @@ END {
   if (n2 != 1) { print "  · HTTP 启动日志显示真实工具数：命中 " n2 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
 }
 ' "deploy/patch-local-tools.sh" "toolCount?: number"
+
+# ---------- index.ts：多账号身份中间件 ----------
+# 独立 done_mark（dispatchTool），保证已部署的旧环境重跑本脚本也能增量打上。
+# I1 引入 dispatchTool / augmentInputSchema
+# I2 给写工具 inputSchema 注入可选 target_account_hint
+# I3 handler 增加 extra 形参（HTTP 传输下携带请求头）
+# I4 工具调用统一经过 dispatchTool（解析账号 + 凭证隔离 + 写入保护 + executed_as）
+patch_file "$index_ts" '
+BEGIN {
+  A0 = "import { LOCAL_TOOLS } from \"./localTools.js\";"
+  B0 = "import { augmentInputSchema, dispatchTool } from \"./identity/dispatch.js\";"
+  A1 = "      { title: tool.title, description: tool.description, inputSchema: tool.inputSchema },"
+  B1 = "      { title: tool.title, description: tool.description, inputSchema: augmentInputSchema(tool.name, tool.inputSchema) },"
+  A2 = "      async (args: Record<string, unknown>) => {"
+  B2 = "      async (args: Record<string, unknown>, extra?: unknown) => {"
+  A3 = "          return await tool.handler(args ?? {});"
+  B3 = "          return await dispatchTool(tool, args ?? {}, extra);"
+  n0 = 0; n1 = 0; n2 = 0; n3 = 0
+}
+{
+  if (index($0, A0) > 0) { print; print B0; n0++; next }
+  if (index($0, A1) > 0) { print B1; n1++; next }
+  if (index($0, A2) > 0) { print B2; n2++; next }
+  if (index($0, A3) > 0) { print B3; n3++; next }
+  print
+}
+END {
+  if (n0 != 1) { print "  · 引入 dispatchTool/augmentInputSchema：命中 " n0 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+  if (n1 != 1) { print "  · 写工具 schema 注入 target_account_hint：命中 " n1 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+  if (n2 != 1) { print "  · handler 增加 extra 形参：命中 " n2 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+  if (n3 != 1) { print "  · 工具调用改走 dispatchTool：命中 " n3 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+}
+' "deploy/patch-local-tools.sh" "dispatchTool"
+
+# ---------- larkCli.ts：把请求级凭证目录注入 lark-cli 子进程 ----------
+# 不注入时 spawn 继承进程默认 HOME（base 登录态），保持迁移/检查等场景可用。
+patch_file "$larkCli_ts" '
+BEGIN {
+  A0 = "import { loadConfig } from \"./config.js\";"
+  B0 = "import { credentialEnv } from \"./identity/context.js\";"
+  A1 = "        stdio: [\"pipe\", \"pipe\", \"pipe\"],"
+  B1 = "        env: credentialEnv(),"
+  n0 = 0; n1 = 0
+}
+{
+  if (index($0, A0) > 0) { print; print B0; n0++; next }
+  if (index($0, A1) > 0) { print B1; n1++; next }
+  print
+}
+END {
+  if (n0 != 1) { print "  · 引入 credentialEnv：命中 " n0 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+  if (n1 != 1) { print "  · 注入子进程 HOME：命中 " n1 " 次（期望 1 次）" > "/dev/stderr"; exit 1 }
+}
+' "deploy/patch-local-tools.sh" "credentialEnv"
+
+# ---------- 浏览器账号接入：内部 API（由代理携带服务器 token 调用） ----------
+patch_file "$http_ts" '
+BEGIN {
+  A0 = "import { parseHttpTokens, type FeishuMcpConfig } from \"./config.js\";"
+  B0 = "import { handleBrowserIdentityRequest } from \"./identity/browser-http.js\";"
+  A1 = "      const proto = String(req.headers[\"x-forwarded-proto\"]"
+  n0 = 0; n1 = 0
+}
+{
+  if (index($0, A0) > 0) { print; print B0; n0++; next }
+  if (index($0, A1) > 0) {
+    print
+    print "      if (url.pathname === \"/internal/identity\") {"
+    print "        await handleBrowserIdentityRequest(req, res, validTokens);"
+    print "        return;"
+    print "      }"
+    n1++; next
+  }
+  print
+}
+END { if (n0 != 1 || n1 != 1) { print "  · 浏览器身份 API 锚点失配" > "/dev/stderr"; exit 1 } }
+' "deploy/patch-local-tools.sh" "handleBrowserIdentityRequest"
+
+# ---------- 向 ChatGPT 声明稳定的账号 profile ----------
+patch_file "$index_ts" '
+BEGIN {
+  A0 = "import { augmentInputSchema, dispatchTool } from \"./identity/dispatch.js\";"
+  B0 = "import { identityToolMetadata } from \"./identity/tool-metadata.js\";"
+  A1 = "      { title: tool.title, description: tool.description, inputSchema: augmentInputSchema(tool.name, tool.inputSchema) },"
+  B1 = "      { title: tool.title, description: tool.description, inputSchema: augmentInputSchema(tool.name, tool.inputSchema), ...identityToolMetadata(tool.name) },"
+  n0 = 0; n1 = 0
+}
+{
+  if (index($0, A0) > 0) { print; print B0; n0++; next }
+  if (index($0, A1) > 0) { print B1; n1++; next }
+  print
+}
+END { if (n0 != 1 || n1 != 1) { print "  · profile metadata 锚点失配" > "/dev/stderr"; exit 1 } }
+' "deploy/patch-local-tools.sh" "identityToolMetadata"
+
+# rawOutput 不等于忽略退出码；拒绝授权不能当成成功继续绑定。
+patch_file "$larkCli_ts" '
+BEGIN { A1 = "      if (options.rawOutput) {"; n1 = 0 }
+{
+  if (index($0, A1) > 0) {
+    print
+    print "        // rawOutputExitCheck: preserve nonzero exit status without leaking CLI output."
+    print "        if (code !== 0) { reject(new LarkCliError(\"lark-cli command failed\")); return; }"
+    n1++; next
+  }
+  print
+}
+END { if (n1 != 1) { print "  · rawOutput 退出码锚点失配" > "/dev/stderr"; exit 1 } }
+' "deploy/patch-local-tools.sh" "rawOutputExitCheck"

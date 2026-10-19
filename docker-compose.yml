@@ -27,9 +27,13 @@ services:
       MCP_HTTP_TOKEN: "${MCP_HTTP_TOKEN:?必填，见 .env.example}"
       LARK_IDENTITY: user
       LARK_TIMEOUT_MS: "120000"
+      # 多账号身份数据目录（identity.json / audit.jsonl / feishu-auth 凭证命名空间）
+      FEISHU_DATA_DIR: "/data"
     volumes:
       - lark-cli-config:/home/node/.lark-cli          # config.json
       - ./lark-keychain:/home/node/.local/share/lark-cli   # 真正的凭证在这里
+      # 多账号：每个飞书账号一个独立凭证命名空间（HOME），必须持久化且属主 uid 1000
+      - ./feishu-accounts:/data
     logging:
       driver: json-file
       options:

@@ -79,6 +79,18 @@ else
   warn "lark-keychain 还不存在 —— 首次部署时创建并授权：sudo mkdir -p lark-keychain && sudo chown -R 1000:1000 lark-keychain"
 fi
 
+# 多账号凭证命名空间目录（每个飞书账号一个 HOME）
+if [ -d feishu-accounts ]; then
+  ok "feishu-accounts 目录已存在"
+  if [ "$(stat -c '%u' feishu-accounts 2>/dev/null)" = "1000" ]; then
+    ok "feishu-accounts 属主正确（uid 1000 = node）"
+  else
+    bad "feishu-accounts 属主不是 1000 —— 执行：sudo chown -R 1000:1000 feishu-accounts"
+  fi
+else
+  warn "feishu-accounts 还不存在 —— 首次部署时创建并授权：sudo mkdir -p feishu-accounts && sudo chown -R 1000:1000 feishu-accounts"
+fi
+
 echo
 echo "=== 5. TLS 证书检查 ==="
 if [ -z "$DOMAIN" ]; then

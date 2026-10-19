@@ -17,6 +17,7 @@ import sys
 import urllib.parse
 
 import requests
+from oauth_browser_test import complete_selection
 
 BASE = os.environ.get("BASE", "https://mcp.example.com")
 PASSWORD = os.environ.get("LOGIN_PASSWORD", "")
@@ -107,14 +108,12 @@ params = {
 r = s.get(f"{BASE}/authorize", params=params, allow_redirects=False, timeout=20)
 step("authorize 302", r.status_code == 302, str(r.status_code))
 loc = r.headers.get("Location", "")
-step("重定向到 /login (密码门)", "/login" in loc, loc)
+step("重定向到账户选择", "/connect/" in loc, loc)
 cookie_names = [c.name for c in s.cookies]
 step("下发 session cookie", len(cookie_names) > 0, ",".join(cookie_names))
 
 print("\n=== 6. 登录 (密码门) ===")
-r = s.post(f"{BASE}/login/demo", data={"password": PASSWORD}, allow_redirects=False, timeout=20)
-step("登录后 302", r.status_code == 302, str(r.status_code))
-loc = r.headers.get("Location", "")
+loc = complete_selection(s, BASE, loc, PASSWORD)
 step("重定向回 redirect_uri", loc.startswith(REDIRECT_URI), loc[:100])
 qs = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
 code = (qs.get("code") or [""])[0]
@@ -137,11 +136,11 @@ r = s.post(
     },
     timeout=20,
 )
-step("token 200", r.status_code == 200, f"{r.status_code} {r.text[:160]}")
+step("token 200", r.status_code == 200, str(r.status_code))
 tok = r.json()
 access = tok.get("access_token", "")
 refresh = tok.get("refresh_token", "")
-step("有 access_token", bool(access), (access[:16] + "...") if access else "")
+step("有 access_token", bool(access))
 step("有 refresh_token", bool(refresh))
 step("token_type=Bearer", tok.get("token_type") == "Bearer")
 
@@ -149,10 +148,7 @@ print("\n=== 8. PKCE 负向测试（错误 verifier 必须被拒） ===")
 params2 = dict(params)
 params2["code_challenge"] = challenge
 r2 = s.get(f"{BASE}/authorize", params=params2, allow_redirects=False, timeout=20)
-s.post(f"{BASE}/login/demo", data={"password": PASSWORD}, allow_redirects=False, timeout=20)
-# 上面直接用已有 session，直接再走一次拿新 code
-r2 = s.get(f"{BASE}/authorize", params=params2, allow_redirects=False, timeout=20)
-loc2 = r2.headers.get("Location", "")
+loc2 = complete_selection(s, BASE, r2.headers.get("Location", ""), PASSWORD)
 code2 = (urllib.parse.parse_qs(urllib.parse.urlparse(loc2).query).get("code") or [""])[0]
 r2 = s.post(
     f"{BASE}/token",
@@ -227,12 +223,11 @@ r = s.post(
     data={"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id},
     timeout=20,
 )
-step("refresh 200", r.status_code == 200, f"{r.status_code} {r.text[:120]}")
+step("refresh 200", r.status_code == 200, str(r.status_code))
 step("拿到新 access_token", bool(r.json().get("access_token")))
 
 print(f"\n{'=' * 56}")
 print(f"结果: {ok_count} 通过 / {fail_count} 失败")
-print(f"access_token: {access}")
 print(f"client_id:    {client_id}")
 print("=" * 56)
 sys.exit(0 if fail_count == 0 else 1)

@@ -2,6 +2,7 @@
 .env
 .env.local
 lark-keychain/
+feishu-accounts/
 
 node_modules/
 *.log

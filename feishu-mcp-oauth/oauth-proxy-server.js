@@ -14,6 +14,7 @@ import crypto from 'node:crypto';
 import session from 'express-session';
 import helmet from 'helmet';
 import http from 'node:http';
+import { mountBrowserConnect, internalIdentityClient } from './browser-connect.js';
 
 const PORT = parseInt(process.env.PORT || '3011', 10);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://mcp.example.com';
@@ -82,7 +83,7 @@ app.use(session({
     httpOnly: true,
     sameSite: 'lax',
     secure: true,
-    maxAge: 10 * 60 * 1000,
+    maxAge: 30 * 60 * 1000,
   },
 }));
 
@@ -243,6 +244,35 @@ app.post('/register', function(req, res) {
 });
 
 // ===== 3. Authorize =====
+// ChatGPT can reuse a cached client_id after this in-memory DCR store restarts.
+// Accept only known callback routes on exact OpenAI hosts in that recovery case.
+function isChatGPTCallback(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port && !url.hash &&
+      ['chatgpt.com', 'chat.openai.com'].includes(url.hostname) &&
+      (['/oauth/callback', '/connector_platform_oauth_redirect'].includes(url.pathname) ||
+        /^\/connector\/oauth\/[A-Za-z0-9_-]+$/.test(url.pathname));
+  } catch { return false; }
+}
+
+const browserConnect = mountBrowserConnect(app, {
+  identity: internalIdentityClient(UPSTREAM, MCP_HTTP_TOKEN),
+  finish: issueAuthCodeAndRedirect,
+  login(req, res, flowId) {
+    if (!GITHUB_CLIENT_ID) return res.redirect('/login?flow=' + encodeURIComponent(flowId));
+    const state = randomToken(24);
+    req.session.github_flows ??= {};
+    req.session.github_flows[state] = flowId;
+    const url = new URL('https://github.com/login/oauth/authorize');
+    url.searchParams.set('client_id', GITHUB_CLIENT_ID);
+    url.searchParams.set('redirect_uri', GITHUB_CALLBACK_URL);
+    url.searchParams.set('scope', 'read:user');
+    url.searchParams.set('state', state);
+    return res.redirect(url.href);
+  },
+});
+
 app.get('/authorize', function(req, res) {
   const q = req.query;
   const client_id = q.client_id;
@@ -266,14 +296,11 @@ app.get('/authorize', function(req, res) {
 
   // Auto-register any unknown client_id (ChatGPT uses UUIDs or 'chatgpt')
   if (!clients.has(client_id)) {
+    if (!isChatGPTCallback(redirect_uri)) return res.status(400).send('invalid redirect_uri');
     clients.set(client_id, {
       client_id: client_id,
       client_secret: null,
-      redirect_uris: [
-        'https://chatgpt.com/oauth/callback',
-        'https://chat.openai.com/oauth/callback',
-        'https://chatgpt.com/connector_platform_oauth_redirect',
-      ],
+      redirect_uris: [redirect_uri],
       grant_types: ['authorization_code', 'refresh_token'],
       token_endpoint_auth_method: 'none',
       client_name: 'auto-registered',
@@ -281,36 +308,18 @@ app.get('/authorize', function(req, res) {
     });
   }
   const client = clients.get(client_id);
-  const allowed = client.redirect_uris.some(function(uri) {
-    if (redirect_uri === uri) return true;
-    const stripped = uri.replace(/\/callback$/, '').replace(/\/connector_platform_oauth_redirect$/, '');
-    return redirect_uri.startsWith(stripped);
-  });
+  const allowed = client.redirect_uris.some(function(uri) { return redirect_uri === uri; });
   if (!allowed) return res.status(400).send('invalid redirect_uri: ' + redirect_uri);
 
-  if (req.session.user_id) {
-    return issueAuthCodeAndRedirect(req, res, { client_id: client_id, redirect_uri: redirect_uri, scope: scope, state: state, resource: resource, code_challenge: code_challenge, code_challenge_method: code_challenge_method });
-  }
-
-  const stateOauth = randomToken(16);
-  req.session.oauth_pending = { client_id: client_id, redirect_uri: redirect_uri, scope: scope, state: state, resource: resource, code_challenge: code_challenge, code_challenge_method: code_challenge_method, oauth_state: stateOauth };
-  if (!GITHUB_CLIENT_ID) {
-    return res.redirect('/login?pending=1');
-  }
-  const ghUrl = new URL('https://github.com/login/oauth/authorize');
-  ghUrl.searchParams.set('client_id', GITHUB_CLIENT_ID);
-  ghUrl.searchParams.set('redirect_uri', GITHUB_CALLBACK_URL);
-  ghUrl.searchParams.set('scope', 'read:user');
-  ghUrl.searchParams.set('state', stateOauth);
-  return res.redirect(ghUrl.toString());
+  return browserConnect.begin(req, res, { client_id, redirect_uri, scope, state, resource, code_challenge, code_challenge_method });
 });
 
 // ===== 3.5 Demo login (no GitHub configured) =====
 app.get('/login', function(req, res) {
-  if (req.session.user_id) {
-    const pending = req.session.oauth_pending;
-    if (pending) { delete req.session.oauth_pending; return issueAuthCodeAndRedirect(req, res, pending); }
-  }
+  const flow = typeof req.query.flow === 'string' ? req.query.flow : '';
+  if (req.session.user_id && flow) return browserConnect.resume(req, res, flow);
+  req.session.login_csrf ??= randomToken(24);
+  res.set('Cache-Control', 'no-store').set('Referrer-Policy', 'no-referrer');
   res.set('Content-Type', 'text/html; charset=utf-8');
   const pwdMode = !!LOGIN_PASSWORD;
   const statusLine = GITHUB_CLIENT_ID
@@ -333,6 +342,8 @@ app.get('/login', function(req, res) {
     '.meta{font-size:12px;color:#888;margin-top:20px}</style></head>' +
     '<body><h1>Authorize access to ' + brand + '</h1>' +
     '<form method="POST" action="/login/demo">' +
+    '<input type="hidden" name="csrf" value="' + req.session.login_csrf + '">' +
+    '<input type="hidden" name="flow" value="' + (/^[A-Za-z0-9_-]+$/.test(flow) ? flow : '') + '">' +
     userField + pwdField +
     '<button type="submit">Authorize &amp; Continue</button>' +
     '</form>' +
@@ -341,6 +352,8 @@ app.get('/login', function(req, res) {
 });
 
 app.post('/login/demo', function(req, res) {
+  if (GITHUB_CLIENT_ID) return res.status(403).send('请使用 GitHub 登录。');
+  if (!req.session.login_csrf || req.body.csrf !== req.session.login_csrf) return res.status(403).send('invalid login CSRF');
   // 密码模式：密码必须匹配（timing-safe），用户名取白名单首位
   const username = (req.body.username || '').trim() || ALLOWED_GITHUB_USERS[0];
   if (LOGIN_PASSWORD) {
@@ -356,8 +369,7 @@ app.post('/login/demo', function(req, res) {
   }
   req.session.user_id = 'github:' + username;
   userSessions.set(req.session.user_id, { github_login: username, name: username, avatar_url: '', last_seen: Date.now() });
-  const pending = req.session.oauth_pending;
-  if (pending) { delete req.session.oauth_pending; return issueAuthCodeAndRedirect(req, res, pending); }
+  if (req.body.flow) return browserConnect.resume(req, res, req.body.flow);
   res.redirect('/');
 });
 
@@ -365,8 +377,9 @@ app.post('/login/demo', function(req, res) {
 app.get('/oauth/github/callback', async function(req, res) {
   const code = req.query.code;
   const state = req.query.state;
-  const pending = req.session.oauth_pending;
-  if (!pending || pending.oauth_state !== state) return res.status(400).send('invalid state; please retry.');
+  const flowId = req.session.github_flows?.[state];
+  if (!flowId) return res.status(400).send('invalid state; please retry.');
+  delete req.session.github_flows[state];
   if (!code) return res.status(400).send('missing code');
   try {
     const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
@@ -391,7 +404,7 @@ app.get('/oauth/github/callback', async function(req, res) {
     }
     req.session.user_id = 'github:' + userData.login;
     userSessions.set(req.session.user_id, { github_login: userData.login, name: userData.name || userData.login, avatar_url: userData.avatar_url || '', last_seen: Date.now() });
-    return issueAuthCodeAndRedirect(req, res, pending);
+    return browserConnect.resume(req, res, flowId);
   } catch (err) {
     console.error('GitHub OAuth callback error:', err);
     res.status(500).send('OAuth error: ' + err.message);
@@ -399,10 +412,13 @@ app.get('/oauth/github/callback', async function(req, res) {
 });
 
 function issueAuthCodeAndRedirect(req, res, pending) {
+  if (!pending.feishu_account_id || !pending.connection_id) return res.status(400).send('请选择飞书账号。');
   const code = randomToken(32);
   authCodes.set(code, {
     client_id: pending.client_id,
     user_id: req.session.user_id,
+    feishu_account_id: pending.feishu_account_id,
+    connection_id: pending.connection_id,
     redirect_uri: pending.redirect_uri,
     scope: pending.scope || 'mcp:read mcp:write',
     // RFC 8707 资源指示器（MCP 规范要求 MUST 出现在授权与 token 请求中）
@@ -414,7 +430,7 @@ function issueAuthCodeAndRedirect(req, res, pending) {
   const url = new URL(pending.redirect_uri);
   url.searchParams.set('code', code);
   if (pending.state) url.searchParams.set('state', pending.state);
-  res.redirect(url.toString());
+  res.redirect(303, url.toString());
 }
 
 // ===== 5. Token endpoint =====
@@ -439,28 +455,30 @@ app.post('/token', function(req, res) {
       if (challenge !== entry.code_challenge) return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
     }
     authCodes.delete(code);
-    return res.json(issueTokens(entry.client_id, entry.user_id, entry.scope, entry.resource));
+    return res.json(issueTokens(entry.client_id, entry.user_id, entry.scope, entry.resource, entry.feishu_account_id, entry.connection_id));
   }
   if (grant_type === 'refresh_token') {
     const refresh_token = body.refresh_token;
     const client_id = body.client_id;
     const entry = refreshTokens.get(refresh_token);
     if (!entry) return res.status(400).json({ error: 'invalid_grant', error_description: 'invalid refresh_token' });
+    if (entry.expires_at < Date.now()) { refreshTokens.delete(refresh_token); return res.status(400).json({ error: 'invalid_grant', error_description: 'expired refresh_token' }); }
     if (entry.client_id !== client_id) return res.status(400).json({ error: 'invalid_grant', error_description: 'client_id mismatch' });
     refreshTokens.delete(refresh_token);
-    return res.json(issueTokens(entry.client_id, entry.user_id, entry.scope, entry.resource));
+    return res.json(issueTokens(entry.client_id, entry.user_id, entry.scope, entry.resource, entry.feishu_account_id, entry.connection_id));
   }
   res.status(400).json({ error: 'unsupported_grant_type' });
 });
 
-function issueTokens(client_id, user_id, scope, resource) {
+function issueTokens(client_id, user_id, scope, resource, feishu_account_id, connection_id) {
   const access = randomToken(32);
   const refresh = randomToken(32);
   const expires_at = Date.now() + TOKEN_TTL * 1000;
   // 绑定 resource（RFC 8707）：MCP 规范要求 access token 必须限定受众，
   // 服务端需校验「该 token 是否为自己签发」，防 token 转发（token passthrough）
-  accessTokens.set(access, { client_id: client_id, user_id: user_id, scope: scope, resource: resource || null, expires_at: expires_at });
-  refreshTokens.set(refresh, { client_id: client_id, user_id: user_id, scope: scope, resource: resource || null, expires_at: expires_at + REFRESH_TOKEN_TTL * 1000 });
+  const binding = { client_id, user_id, scope, resource: resource || null, feishu_account_id, connection_id };
+  accessTokens.set(access, { ...binding, expires_at });
+  refreshTokens.set(refresh, { ...binding, expires_at: expires_at + REFRESH_TOKEN_TTL * 1000 });
   return { access_token: access, token_type: 'Bearer', expires_in: TOKEN_TTL, refresh_token: refresh, scope: scope };
 }
 
@@ -501,6 +519,10 @@ app.all('/mcp', function(req, res) {
   delete forwardHeaders['content-length'];
   forwardHeaders.authorization = 'Bearer ' + MCP_HTTP_TOKEN;
   forwardHeaders['x-oauth-user'] = entry.user_id;
+  // OAuth client_id identifies the client, not an individual account grant.
+  forwardHeaders['x-oauth-connection'] = entry.connection_id || entry.client_id || '';
+  delete forwardHeaders['x-oauth-account'];
+  if (entry.feishu_account_id) forwardHeaders['x-oauth-account'] = entry.feishu_account_id;
 
   const opts = {
     hostname: mcpTarget.hostname,

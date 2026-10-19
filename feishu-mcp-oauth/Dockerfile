@@ -9,6 +9,7 @@ RUN npm install --omit=dev && npm cache clean --force
 # Copy server
 # 注意文件名是 oauth-proxy-server.js（与 package.json 里的 main 保持一致）
 COPY oauth-proxy-server.js ./server.js
+COPY browser-connect.js ./browser-connect.js
 
 ENV PORT=3011
 # PUBLIC_BASE_URL / UPSTREAM 由 docker-compose.yml 用 ${DOMAIN} 注入，这里不写死任何域名。

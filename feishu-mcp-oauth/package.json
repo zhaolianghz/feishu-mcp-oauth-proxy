@@ -5,7 +5,8 @@
   "type": "module",
   "main": "oauth-proxy-server.js",
   "scripts": {
-    "start": "node oauth-proxy-server.js"
+    "start": "node oauth-proxy-server.js",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "express": "^4.21.0",

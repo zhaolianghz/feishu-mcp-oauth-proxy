@@ -21,6 +21,18 @@ else
   chown -R 1000:1000 lark-keychain
 fi
 
+# 多账号身份数据（identity.json + 每账号独立凭证命名空间）。
+# 同样必须 bind mount 且属主 uid 1000，否则容器内 node 用户写不进。
+if [ ! -d feishu-accounts ]; then
+  mkdir -p feishu-accounts
+  chown -R 1000:1000 feishu-accounts
+  chmod 700 feishu-accounts
+  echo "  已创建 feishu-accounts（uid 1000）"
+else
+  echo "  feishu-accounts 已存在"
+  chown -R 1000:1000 feishu-accounts
+fi
+
 echo
 echo "=== 2. 获取 feishu-mcp 上游代码 ==="
 # 上游本体不进本仓库（体积大、与中间件无关），首次部署时拉取。
@@ -116,17 +128,12 @@ echo "=================================================="
 echo "✅ 部署完成"
 echo
 echo "接下来："
-echo "  1. 飞书授权（必做，否则工具调用会失败）"
-echo "     sudo bash feishu-mcp-oauth/scripts/01-inject-app-secret.sh"
-echo "     sudo bash feishu-mcp-oauth/scripts/02-start-feishu-login.sh"
-echo "     # 浏览器授权后："
-echo "     sudo bash feishu-mcp-oauth/scripts/03-complete-feishu-login.sh <device_code>"
-echo
-echo "  2. ChatGPT 里添加连接器"
+echo "  1. ChatGPT 里添加连接器"
 echo "     URL:      https://${DOMAIN}/mcp"
 echo "     认证:     OAuth"
 echo "     密码:     .env 里的 LOGIN_PASSWORD"
 echo
-echo "  3. 体检"
-echo "     sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh"
+echo "  2. 在浏览器选择飞书身份、接入已有应用并确认用户授权"
+echo "     App Secret 由服务端自动接收，无须运行授权脚本"
+echo "  3. 个人与企业各连一条：ChatGPT 设置 → 连接另一个账户"
 echo "=================================================="

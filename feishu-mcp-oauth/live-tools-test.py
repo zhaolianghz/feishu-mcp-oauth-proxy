@@ -7,6 +7,7 @@ import secrets
 import urllib.parse
 
 import requests
+from oauth_browser_test import complete_selection
 
 BASE = os.environ["BASE"]
 PW = os.environ["LOGIN_PASSWORD"]
@@ -34,7 +35,7 @@ cid = reg["client_id"]
 
 ver = b64(secrets.token_bytes(40))
 ch = b64(hashlib.sha256(ver.encode()).digest())
-s.get(
+authorization = s.get(
     f"{BASE}/authorize",
     params={
         "response_type": "code",
@@ -47,7 +48,7 @@ s.get(
     },
     allow_redirects=False,
 )
-loc = s.post(f"{BASE}/login/demo", data={"password": PW}, allow_redirects=False).headers["Location"]
+loc = complete_selection(s, BASE, authorization.headers["Location"], PW)
 code = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["code"][0]
 tok = s.post(
     md["token_endpoint"],

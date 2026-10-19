@@ -24,7 +24,7 @@ ChatGPT ──HTTPS──> Cloudflare ──> nginx:443 ──> oauth-proxy:3011
 - [ ] 一台有公网 IP 的 Linux 服务器（已装 Docker + Compose v2 + nginx）
 - [ ] 一个域名，**A 记录已指向这台服务器**
 - [ ] TLS 证书（Cloudflare Origin CA 或 Let's Encrypt 都行）
-- [ ] 一个飞书自建应用（[怎么建 →](docs/feishu-app-setup.md)）
+- [ ] 飞书账号，以及你要接入的自建应用（已有应用可在浏览器授权接入，无须复制 Secret）
 - [ ] **ChatGPT 付费账号** —— 自定义连接器是付费功能，且要在设置里手动开开发者模式
 
 > ⚠️ **域名绝对不能用下划线**（`mcp_x.example.com` ✗，`mcp-x.example.com` ✓）。
@@ -99,21 +99,11 @@ sudo nginx -t && sudo nginx -s reload
 > 如果 nginx 不在 systemd 管理下（常见于 80 端口被 Docker 占用时），
 > systemctl 会报 `Unit cannot be reloaded because it is inactive`。
 
-### 第 5 步：授权飞书
+### 第 5 步：准备要连接的飞书身份
 
-飞书这步**不能跳**，跳了工具调用会全部失败。
-
-```bash
-# 5.1 填入你的飞书 App ID（先编辑 .env，加一行 FEISHU_APP_ID=cli_xxxxxxxx）
-sudo bash feishu-mcp-oauth/scripts/01-inject-app-secret.sh
-#     然后粘贴 App Secret
-
-# 5.2 发起授权，它会打印一个链接
-sudo bash feishu-mcp-oauth/scripts/02-start-feishu-login.sh
-
-# 5.3 浏览器打开上面的链接完成授权，然后：
-sudo bash feishu-mcp-oauth/scripts/03-complete-feishu-login.sh <上一步输出的 device_code>
-```
+企业和个人飞书身份可以各自连接。在下一步添加连接器后，浏览器会引导你选择账号、
+接入飞书应用并确认用户授权；不需要登录服务器运行授权脚本或复制 App Secret。
+旧的脚本方式保留用于运维兼容，见 [应用配置说明](docs/feishu-app-setup.md)。
 
 ### 第 6 步：在 ChatGPT 里添加
 
@@ -126,6 +116,18 @@ ChatGPT → 设置 → Apps（Connectors）→ Advanced settings → 打开 **De
 | URL | `https://你的域名/mcp` |
 | 认证方式 | **OAuth** |
 | 登录密码 | `.env` 里的 `LOGIN_PASSWORD` |
+
+浏览器通过登录门后会进入**选择飞书账号**页面：
+
+1. 已连接的企业账号可直接确认使用。
+2. 连接个人飞书时，点击「前往飞书连接账号」，在飞书官方页面选择个人身份和已有应用。
+3. 确认应用接入后，回到连接页继续确认用户授权；系统自动接收、保存凭据。
+4. 核对账号后点击「连接并返回 ChatGPT」。
+
+以后在 ChatGPT 的应用设置点击**连接另一个账户**，也会进入相同流程。
+已有应用可展开「指定已有应用」提供 App ID 来定位；不需要提供 Secret。
+应用接入和用户授权是两个步骤，可能需要分别确认。企业管理员要求的审批仍由飞书处理。
+每条 ChatGPT 连接固定使用自己授权的飞书账号；选择另一条连接即可操作另一个空间。
 
 ---
 
@@ -142,7 +144,14 @@ BASE=https://你的域名 LOGIN_PASSWORD='你的登录门密码' \
   python3 feishu-mcp-oauth/live-tools-test.py
 ```
 
-或者用一条命令做整体体检：
+多账号环境下，上述开发者测试需用 `FEISHU_ACCOUNT_ID=fa_…` 指定测试账号，避免选错身份。
+本地开发的浏览器流程、账号隔离及部署补丁回归测试：
+
+```bash
+bash scripts/test-browser-connect.sh
+```
+
+或者用一条命令检查旧默认应用登录态：
 
 ```bash
 sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
@@ -183,7 +192,7 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 ## 本仓库自带的工具
 
 上游 feishu-mcp 只注册了 9 个读写的文档类工具，**没有云空间文件管理**。本仓库通过叠加层
-补上 4 个，连起来共 **13 个**：
+补上 4 个，连起来共 **13 个**（再加下面 8 个账号及身份工具，合计 **21 个**）：
 
 | 工具 | 做什么 | 底层命令 |
 |---|---|---|
@@ -194,6 +203,32 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 
 配套的权限（可写的 `drive:drive`）见 `docs/feishu-app-setup.md` 第二节。
 
+### 多账号身份（Identity & Multi-Account V2.0）
+
+上游只有**一个全局飞书登录态**：多个 ChatGPT 连接共用同一身份，换组织只能重登服务器。
+本仓库的叠加层补了一套多账号身份体系，再加 8 个账号及身份工具，连起来共 **21 个**：
+
+| 工具 | 做什么 |
+|---|---|
+| `feishu_account_list` | 列出已连接账号，标出当前账号 |
+| `feishu_account_current` | 实时返回当前工具会使用的身份 |
+| `feishu_account_connect` | 发起新账号 OAuth，返回授权链接（可用 `app` 指定组织） |
+| `feishu_account_switch` | 切换当前账号 |
+| `feishu_account_disconnect` | 断开账号并删除其凭证 |
+| `feishu_auth_status` | 查看某账号授权是否有效 |
+| `feishu_app_list` | 列出已注册的飞书应用（组织） |
+| `feishu_get_profile` | 向 ChatGPT 返回当前连接的稳定账号身份与显示名称 |
+
+- 每个账号一个独立凭证命名空间（lark-cli 的 `HOME`），**完全隔离、不串号**
+- 浏览器 OAuth 凭据固定绑定账号，失效后拒绝访问；旧连接按 `连接 → 用户默认 → 唯一账号` 解析
+- 写工具返回 `executed_as`；带 `target_account_hint` 且与当前账号不一致时**拒绝写入**
+- 首次部署自动把旧的单账号登录态迁移成第一个账号，老用户无感
+- **多组织**：正常入口是 ChatGPT 设置里的「连接另一个账户」，在浏览器接入对应身份下的应用。
+  `scripts/05-register-app.sh` 与聊天内 `feishu_account_connect` 保留用于旧接入方式。
+  固定账号的 ChatGPT 连接不能通过 `feishu_account_switch` 改成其他身份，需选择相应连接。
+
+架构、存储布局与部署影响见 `docs/multi-account.md`。
+
 ### ⚠️ 不要直接改 `feishu-mcp/src/`
 
 `deploy/deploy.sh` 第 2 步每次部署都从 GitHub 重新克隆上游 `src/` 覆盖本地。
@@ -203,8 +238,9 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 所以本仓库的工具放在 `feishu-mcp/local-src/`，部署时按这个顺序处理：
 
 1. 克隆上游 `src/`（可能被覆盖，无所谓）
-2. `cp -r feishu-mcp/local-src/src/. feishu-mcp/src/` —— 铺一层本地工具
-3. `bash deploy/patch-local-tools.sh` —— 往 `index.ts` 注入 `...LOCAL_TOOLS` 注册
+2. `cp -r feishu-mcp/local-src/src/. feishu-mcp/src/` —— 铺一层本地工具 + 身份模块
+3. `bash deploy/patch-local-tools.sh` —— 往 `index.ts` 注入 `...LOCAL_TOOLS` 注册、多账号中间件，
+   并给 `larkCli.ts` 注入凭证命名空间
 
 ### 想再加一个工具
 
@@ -214,9 +250,11 @@ sudo bash feishu-mcp-oauth/scripts/04-check-feishu-auth.sh
 
 ### 补丁脚本失配了怎么办
 
-`patch-local-tools.sh` 靠三处锚点定位上游 `index.ts`。**锚点命中数不等于 1 就直接
+`patch-local-tools.sh` 靠锚点定位上游 `index.ts` / `httpServer.ts` / `larkCli.ts`。**锚点命中数不等于 1 就直接
 退出非 0**，进而让 `deploy.sh` 整个中止 —— 这是故意的：宁可部署失败，也不要悄悄少几个
 工具让你在几天后才发现。
+
+多账号相关的补丁用独立的 done_mark（`dispatchTool` / `credentialEnv`），**已部署的旧环境重跑本脚本也能增量打上**，不会因为 `localTools.js` 已存在就整段跳过。
 
 所以看到这条报错：
 
